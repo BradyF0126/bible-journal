@@ -68,12 +68,37 @@ function toInsert(entry, userId) {
   };
 }
 
+function fromAiRow(row) {
+  return {
+    id: row.id,
+    createdAt: Date.parse(row.created_at),
+    verseRef: row.verse_ref || "",
+    question: row.question || "",
+    answer: row.answer || "",
+    topic: row.topic || "",
+  };
+}
+
+function toAiInsert(note, userId) {
+  return {
+    id: note.id || uid(),
+    user_id: userId,
+    verse_ref: note.verseRef || "",
+    question: note.question || "",
+    answer: note.answer || "",
+    topic: note.topic || "",
+    created_at: note.createdAt ? new Date(note.createdAt).toISOString() : new Date().toISOString(),
+  };
+}
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [entries, setEntries] = useState([]);
+  const [aiNotes, setAiNotes] = useState([]);
   const [screen, setScreen] = useState("home");
   const [activeId, setActiveId] = useState(null);
   const [loadingEntries, setLoadingEntries] = useState(true);
+  const [loadingAiNotes, setLoadingAiNotes] = useState(true);
   const [authMode, setAuthMode] = useState("sign-in");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -88,6 +113,23 @@ export default function App() {
   const [query, setQuery] = useState("");
   const contentRef = useRef(null);
 
+  const [topicSuggestions, setTopicSuggestions] = useState([
+    "How to trust God in anxiety",
+    "How to hear God through Scripture",
+    "What true repentance looks like",
+    "How to forgive biblically",
+    "How to stay consistent in prayer",
+  ]);
+  const [topicsLoading, setTopicsLoading] = useState(false);
+  const [aiTopicQuery, setAiTopicQuery] = useState("");
+  const [aiVerseRef, setAiVerseRef] = useState("");
+  const [aiQuestion, setAiQuestion] = useState("");
+  const [aiAnswer, setAiAnswer] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState("");
+  const [aiNotesQuery, setAiNotesQuery] = useState("");
+  const [savingAiNote, setSavingAiNote] = useState(false);
+
   const localEntries = useMemo(() => loadLocalEntries(), []);
   const hasLocalEntries = localEntries.length > 0;
   const isConfigured = Boolean(supabase);
@@ -96,6 +138,7 @@ export default function App() {
   useEffect(() => {
     if (!supabase) {
       setLoadingEntries(false);
+      setLoadingAiNotes(false);
       return;
     }
 
@@ -106,6 +149,7 @@ export default function App() {
       setSession(data.session);
       if (!data.session) {
         setLoadingEntries(false);
+        setLoadingAiNotes(false);
       }
     });
 
@@ -115,9 +159,11 @@ export default function App() {
       setSession(nextSession);
       if (!nextSession) {
         setEntries([]);
+        setAiNotes([]);
         setActiveId(null);
         setScreen("home");
         setLoadingEntries(false);
+        setLoadingAiNotes(false);
       }
     });
 
@@ -154,7 +200,28 @@ export default function App() {
       setLoadingEntries(false);
     }
 
+    async function fetchAiNotes() {
+      setLoadingAiNotes(true);
+
+      const { data, error } = await supabase
+        .from("ai_notes")
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      if (cancelled) return;
+
+      if (error) {
+        setAiNotes([]);
+        setSyncMessage((prev) => prev || error.message);
+      } else {
+        setAiNotes((data || []).map(fromAiRow));
+      }
+
+      setLoadingAiNotes(false);
+    }
+
     fetchEntries();
+    fetchAiNotes();
 
     return () => {
       cancelled = true;
@@ -162,7 +229,6 @@ export default function App() {
   }, [user]);
 
   useEffect(() => {
-    // Keep each tab anchored to the top so the layout does not appear to jump.
     contentRef.current?.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }, [screen]);
 
@@ -179,7 +245,7 @@ export default function App() {
     return sortedEntries.find((e) => e.id === activeId) || null;
   }, [sortedEntries, activeId]);
 
-  const filtered = useMemo(() => {
+  const filteredEntries = useMemo(() => {
     if (!query.trim()) return sortedEntries;
     return sortedEntries.filter((e) => {
       return (
@@ -190,6 +256,18 @@ export default function App() {
       );
     });
   }, [sortedEntries, query]);
+
+  const filteredAiNotes = useMemo(() => {
+    if (!aiNotesQuery.trim()) return aiNotes;
+    return aiNotes.filter((note) => {
+      return (
+        contains(note.verseRef, aiNotesQuery) ||
+        contains(note.question, aiNotesQuery) ||
+        contains(note.answer, aiNotesQuery) ||
+        contains(note.topic, aiNotesQuery)
+      );
+    });
+  }, [aiNotes, aiNotesQuery]);
 
   function goHome() {
     setScreen("home");
@@ -229,19 +307,13 @@ export default function App() {
       return;
     }
 
-    let result;
-
-    if (authMode === "sign-up") {
-      result = await supabase.auth.signUp({
-        email: cleanEmail,
-        password: cleanPassword,
-      });
-    } else {
-      result = await supabase.auth.signInWithPassword({
-        email: cleanEmail,
-        password: cleanPassword,
-      });
-    }
+    const result =
+      authMode === "sign-up"
+        ? await supabase.auth.signUp({ email: cleanEmail, password: cleanPassword })
+        : await supabase.auth.signInWithPassword({
+            email: cleanEmail,
+            password: cleanPassword,
+          });
 
     setAuthLoading(false);
 
@@ -285,11 +357,7 @@ export default function App() {
       user.id
     );
 
-    const { data, error } = await supabase
-      .from("entries")
-      .insert(payload)
-      .select()
-      .single();
+    const { data, error } = await supabase.from("entries").insert(payload).select().single();
 
     if (error) {
       alert(error.message);
@@ -324,50 +392,37 @@ export default function App() {
     if (!supabase) return;
 
     const dbPatch = {};
-
-    if (Object.prototype.hasOwnProperty.call(patch, "entryDate")) {
-      dbPatch.entry_date = patch.entryDate || null;
-    }
-    if (Object.prototype.hasOwnProperty.call(patch, "verseRef")) {
-      dbPatch.verse_ref = patch.verseRef;
-    }
-    if (Object.prototype.hasOwnProperty.call(patch, "verseText")) {
-      dbPatch.verse_text = patch.verseText;
-    }
-    if (Object.prototype.hasOwnProperty.call(patch, "notes")) {
-      dbPatch.notes = patch.notes;
-    }
+    if (Object.prototype.hasOwnProperty.call(patch, "entryDate")) dbPatch.entry_date = patch.entryDate || null;
+    if (Object.prototype.hasOwnProperty.call(patch, "verseRef")) dbPatch.verse_ref = patch.verseRef;
+    if (Object.prototype.hasOwnProperty.call(patch, "verseText")) dbPatch.verse_text = patch.verseText;
+    if (Object.prototype.hasOwnProperty.call(patch, "notes")) dbPatch.notes = patch.notes;
 
     setEntries((prev) =>
       prev.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry))
     );
 
     const { error } = await supabase.from("entries").update(dbPatch).eq("id", id);
-
-    if (error) {
-      setSyncMessage(`Sync error: ${error.message}`);
-    } else {
-      setSyncMessage("");
-    }
+    if (error) setSyncMessage(`Sync error: ${error.message}`);
   }
 
   async function importLocalData() {
     if (!supabase || !user || !hasLocalEntries) return;
 
-    const payload = localEntries.map((entry) => {
-      const imported = {
-        id: entry.id || uid(),
-        createdAt: entry.createdAt || Date.now(),
-        entryDate: entry.entryDate || "",
-        verseRef: entry.verseRef || "",
-        verseText: entry.verseText || "",
-        notes: entry.notes || "",
-      };
-      return toInsert(imported, user.id);
-    });
+    const payload = localEntries.map((entry) =>
+      toInsert(
+        {
+          id: entry.id || uid(),
+          createdAt: entry.createdAt || Date.now(),
+          entryDate: entry.entryDate || "",
+          verseRef: entry.verseRef || "",
+          verseText: entry.verseText || "",
+          notes: entry.notes || "",
+        },
+        user.id
+      )
+    );
 
     const { data, error } = await supabase.from("entries").insert(payload).select("*");
-
     if (error) {
       alert(error.message);
       return;
@@ -378,11 +433,101 @@ export default function App() {
     setSyncMessage("Imported your entries from this device.");
   }
 
-  if (!isConfigured) {
-    return (
-      <SetupScreen />
-    );
+  async function askAiForTopics() {
+    setTopicsLoading(true);
+    setAiError("");
+
+    try {
+      const response = await fetch("/api/assistant", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "topics",
+          context: aiTopicQuery.trim() || "daily Christian growth for teens and adults",
+        }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "AI request failed.");
+      }
+
+      setTopicSuggestions(data.topics || []);
+    } catch (error) {
+      setAiError(error.message || "Could not load topic suggestions.");
+    } finally {
+      setTopicsLoading(false);
+    }
   }
+
+  async function askAiAboutVerse() {
+    const cleanVerse = aiVerseRef.trim();
+    const cleanQuestion = aiQuestion.trim();
+
+    if (!cleanVerse || !cleanQuestion) {
+      setAiError("Enter both a verse reference and your question.");
+      return;
+    }
+
+    setAiLoading(true);
+    setAiError("");
+    setAiAnswer("");
+
+    try {
+      const response = await fetch("/api/assistant", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "verse_qa",
+          verseRef: cleanVerse,
+          question: cleanQuestion,
+        }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "AI request failed.");
+      }
+
+      setAiAnswer(data.answer || "");
+    } catch (error) {
+      setAiError(error.message || "Could not get an AI response.");
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
+  async function saveCurrentAiNote() {
+    if (!supabase || !user || !aiAnswer.trim()) return;
+
+    setSavingAiNote(true);
+    const payload = toAiInsert(
+      {
+        id: uid(),
+        createdAt: Date.now(),
+        verseRef: aiVerseRef.trim(),
+        question: aiQuestion.trim(),
+        answer: aiAnswer.trim(),
+        topic: "",
+      },
+      user.id
+    );
+
+    const { data, error } = await supabase.from("ai_notes").insert(payload).select().single();
+
+    setSavingAiNote(false);
+
+    if (error) {
+      setAiError(error.message);
+      return;
+    }
+
+    setAiNotes((prev) => [fromAiRow(data), ...prev]);
+    setSyncMessage("Saved to AI Notes.");
+    setScreen("ai-notes");
+  }
+
+  if (!isConfigured) return <SetupScreen />;
 
   if (!session) {
     return (
@@ -402,6 +547,9 @@ export default function App() {
 
   return (
     <div style={styles.page}>
+      <div style={styles.bgGlowA} />
+      <div style={styles.bgGlowB} />
+      <div style={styles.crossPattern} />
       <div style={styles.app}>
         <Header
           title={
@@ -413,6 +561,10 @@ export default function App() {
               ? "Search"
               : screen === "all"
               ? "All Entries"
+              : screen === "ai"
+              ? "Explore AI"
+              : screen === "ai-notes"
+              ? "AI Notes"
               : "Entry"
           }
           subtitle={user.email}
@@ -449,8 +601,12 @@ export default function App() {
                   onNew={startNew}
                   onSearch={() => setScreen("search")}
                   onAll={() => setScreen("all")}
+                  onAi={() => setScreen("ai")}
+                  onAiNotes={() => setScreen("ai-notes")}
                   count={entries.length}
+                  aiNoteCount={aiNotes.length}
                   latest={sortedEntries[0]}
+                  latestAiNote={aiNotes[0]}
                 />
               )}
 
@@ -469,16 +625,39 @@ export default function App() {
               )}
 
               {screen === "search" && (
-                <Search
-                  query={query}
-                  setQuery={setQuery}
-                  results={filtered}
-                  onOpen={openEntry}
+                <Search query={query} setQuery={setQuery} results={filteredEntries} onOpen={openEntry} />
+              )}
+
+              {screen === "all" && <AllEntries entries={sortedEntries} onOpen={openEntry} />}
+
+              {screen === "ai" && (
+                <ExploreAi
+                  topicSuggestions={topicSuggestions}
+                  topicsLoading={topicsLoading}
+                  aiTopicQuery={aiTopicQuery}
+                  setAiTopicQuery={setAiTopicQuery}
+                  onAskTopics={askAiForTopics}
+                  aiVerseRef={aiVerseRef}
+                  setAiVerseRef={setAiVerseRef}
+                  aiQuestion={aiQuestion}
+                  setAiQuestion={setAiQuestion}
+                  aiAnswer={aiAnswer}
+                  aiLoading={aiLoading}
+                  aiError={aiError}
+                  onAskVerse={askAiAboutVerse}
+                  onSaveAiNote={saveCurrentAiNote}
+                  savingAiNote={savingAiNote}
+                  onOpenAiNotes={() => setScreen("ai-notes")}
                 />
               )}
 
-              {screen === "all" && (
-                <AllEntries entries={sortedEntries} onOpen={openEntry} />
+              {screen === "ai-notes" && (
+                <AiNotes
+                  notes={filteredAiNotes}
+                  query={aiNotesQuery}
+                  setQuery={setAiNotesQuery}
+                  loading={loadingAiNotes}
+                />
               )}
 
               {screen === "view" && activeEntry && (
@@ -517,14 +696,14 @@ function SetupScreen() {
       <div style={styles.setupCard}>
         <div style={styles.h1}>Supabase setup needed</div>
         <div style={styles.p}>
-          Add your project values to a local <code>.env</code> file before running the app.
+          Add your project values to local <code>.env</code> first.
         </div>
         <div style={styles.codeBlock}>
           VITE_SUPABASE_URL=your-project-url{"\n"}
           VITE_SUPABASE_ANON_KEY=your-anon-public-key
         </div>
         <div style={styles.small}>
-          I already wired the app. Once those two values are in place and the SQL is run, accounts and cross-device sync will work.
+          For AI, also set <code>OPENAI_API_KEY</code> in Vercel project environment variables.
         </div>
       </div>
     </div>
@@ -547,12 +726,8 @@ function AuthScreen({
       <div style={styles.authShell}>
         <div style={styles.authBrand}>By the Blood</div>
         <div style={styles.authCard}>
-          <div style={styles.h1}>
-            {authMode === "sign-up" ? "Create your account" : "Sign in"}
-          </div>
-          <div style={styles.p}>
-            Save your journal across phones, tablets, and computers.
-          </div>
+          <div style={styles.h1}>{authMode === "sign-up" ? "Create your account" : "Sign in"}</div>
+          <div style={styles.p}>Save your journal across phones, tablets, and computers.</div>
 
           <form onSubmit={onSubmit}>
             <label style={styles.label}>Email</label>
@@ -574,25 +749,14 @@ function AuthScreen({
             />
 
             <button style={styles.primary} type="submit" disabled={authLoading}>
-              {authLoading
-                ? "Working..."
-                : authMode === "sign-up"
-                ? "Create Account"
-                : "Sign In"}
+              {authLoading ? "Working..." : authMode === "sign-up" ? "Create Account" : "Sign In"}
             </button>
           </form>
 
           {authMessage ? <div style={styles.notice}>{authMessage}</div> : null}
 
-          <button
-            style={styles.linkBtn}
-            onClick={() =>
-              setAuthMode(authMode === "sign-up" ? "sign-in" : "sign-up")
-            }
-          >
-            {authMode === "sign-up"
-              ? "Already have an account? Sign in"
-              : "Need an account? Create one"}
+          <button style={styles.linkBtn} onClick={() => setAuthMode(authMode === "sign-up" ? "sign-in" : "sign-up")}>
+            {authMode === "sign-up" ? "Already have an account? Sign in" : "Need an account? Create one"}
           </button>
         </div>
       </div>
@@ -617,46 +781,187 @@ function Header({ title, subtitle, onHome, onSignOut }) {
   );
 }
 
-function Home({ onNew, onSearch, onAll, count, latest }) {
+function Home({ onNew, onSearch, onAll, onAi, onAiNotes, count, aiNoteCount, latest, latestAiNote }) {
   return (
     <div style={styles.homeWrap}>
-      <div style={styles.crossBox}>
-        <div style={styles.vLine} />
-        <div style={styles.hLine} />
-        <div style={styles.crossCenter}>+</div>
-
-        <div style={{ ...styles.quad, ...styles.q1 }}>
-          <BigButton label="New Entry" sub="Write a new verse + notes" onClick={onNew} />
-        </div>
-
-        <div style={{ ...styles.quad, ...styles.q2 }}>
-          <BigButton label="Search" sub="Find by verse, notes, or date" onClick={onSearch} />
-        </div>
-
-        <div style={{ ...styles.quad, ...styles.q3 }}>
-          <BigButton label="All Entries" sub={`Browse all (${count})`} onClick={onAll} />
-        </div>
-
-        <div style={{ ...styles.quad, ...styles.q4 }}>
-          <div style={styles.card}>
-            <div style={styles.h2}>Latest</div>
-            {latest ? (
-              <>
-                <div style={styles.p}>
-                  <b>{latest.verseRef || "Untitled Verse"}</b>
-                </div>
-                <div style={styles.small}>
-                  {latest.entryDate ? `Entry date: ${latest.entryDate} | ` : ""}
-                  Saved: {formatDateTime(latest.createdAt)}
-                </div>
-                <div style={styles.pClamp}>{latest.notes || latest.verseText || "-"}</div>
-              </>
-            ) : (
-              <div style={styles.p}>No entries yet. Start with New Entry.</div>
-            )}
-          </div>
+      <div style={styles.hero}>
+        <div style={styles.heroEyebrow}>Faith + Focus</div>
+        <div style={styles.heroTitle}>Grow closer to God every day</div>
+        <div style={styles.heroText}>
+          Write, reflect, ask questions, and keep everything in one place across all your devices.
         </div>
       </div>
+
+      <div style={styles.homeGrid}>
+        <BigButton label="New Entry" sub="Write today's reflection" onClick={onNew} />
+        <BigButton label="Search Journal" sub="Find by verse and notes" onClick={onSearch} />
+        <BigButton label="All Entries" sub={`Browse all (${count})`} onClick={onAll} />
+        <BigButton label="Explore AI" sub="Get guided Bible help" onClick={onAi} />
+        <BigButton label="AI Notes" sub={`Saved AI answers (${aiNoteCount})`} onClick={onAiNotes} />
+      </div>
+
+      <div style={styles.homeMetaGrid}>
+        <div style={styles.card}>
+          <div style={styles.h2}>Latest Journal Entry</div>
+          {latest ? (
+            <>
+              <div style={styles.p}>
+                <b>{latest.verseRef || "Untitled Verse"}</b>
+              </div>
+              <div style={styles.small}>
+                {latest.entryDate ? `Entry date: ${latest.entryDate} | ` : ""}
+                Saved: {formatDateTime(latest.createdAt)}
+              </div>
+              <div style={styles.pClamp}>{latest.notes || latest.verseText || "-"}</div>
+            </>
+          ) : (
+            <div style={styles.p}>No entries yet. Start with New Entry.</div>
+          )}
+        </div>
+
+        <div style={styles.card}>
+          <div style={styles.h2}>Latest AI Note</div>
+          {latestAiNote ? (
+            <>
+              <div style={styles.p}>
+                <b>{latestAiNote.verseRef || latestAiNote.topic || "AI insight"}</b>
+              </div>
+              <div style={styles.small}>Saved: {formatDateTime(latestAiNote.createdAt)}</div>
+              <div style={styles.pClamp}>{latestAiNote.answer || "-"}</div>
+            </>
+          ) : (
+            <div style={styles.p}>No AI notes yet. Open Explore AI and ask your first question.</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ExploreAi({
+  topicSuggestions,
+  topicsLoading,
+  aiTopicQuery,
+  setAiTopicQuery,
+  onAskTopics,
+  aiVerseRef,
+  setAiVerseRef,
+  aiQuestion,
+  setAiQuestion,
+  aiAnswer,
+  aiLoading,
+  aiError,
+  onAskVerse,
+  onSaveAiNote,
+  savingAiNote,
+  onOpenAiNotes,
+}) {
+  return (
+    <div style={styles.stack}>
+      <div style={styles.card}>
+        <div style={styles.h2}>Topic Explorer</div>
+        <div style={styles.p}>
+          Ask AI for Bible-learning topics so you always have a next study direction.
+        </div>
+        <label style={styles.label}>Focus area (optional)</label>
+        <input
+          style={styles.input}
+          value={aiTopicQuery}
+          onChange={(e) => setAiTopicQuery(e.target.value)}
+          placeholder="Example: identity in Christ, spiritual warfare, prayer consistency..."
+        />
+        <div style={styles.rowInline}>
+          <button style={styles.secondary} onClick={onAskTopics} disabled={topicsLoading}>
+            {topicsLoading ? "Loading..." : "Suggest Topics"}
+          </button>
+          <button style={styles.linkBtnInline} onClick={onOpenAiNotes}>
+            View AI Notes
+          </button>
+        </div>
+        <div style={styles.topicGrid}>
+          {topicSuggestions.map((topic) => (
+            <div key={topic} style={styles.topicChip}>
+              {topic}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={styles.card}>
+        <div style={styles.h2}>Ask About a Verse</div>
+        <div style={styles.p}>
+          Enter a verse reference and question. AI will help explain context, meaning, and application.
+        </div>
+
+        <label style={styles.label}>Verse reference</label>
+        <input
+          style={styles.input}
+          value={aiVerseRef}
+          onChange={(e) => setAiVerseRef(e.target.value)}
+          placeholder="Example: Romans 8:1"
+        />
+
+        <label style={styles.label}>Your question</label>
+        <textarea
+          style={{ ...styles.textarea, minHeight: 120 }}
+          value={aiQuestion}
+          onChange={(e) => setAiQuestion(e.target.value)}
+          placeholder="What does this verse mean? How do I apply it today?"
+        />
+
+        <button style={styles.primary} onClick={onAskVerse} disabled={aiLoading}>
+          {aiLoading ? "Asking AI..." : "Ask AI"}
+        </button>
+
+        {aiError ? <div style={styles.noticeDanger}>{aiError}</div> : null}
+
+        {aiAnswer ? (
+          <div style={styles.aiAnswerCard}>
+            <div style={styles.h2}>AI Response</div>
+            <div style={styles.pPreserve}>{aiAnswer}</div>
+            <button style={styles.secondary} onClick={onSaveAiNote} disabled={savingAiNote}>
+              {savingAiNote ? "Saving..." : "Save to AI Notes"}
+            </button>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function AiNotes({ notes, query, setQuery, loading }) {
+  return (
+    <div style={styles.card}>
+      <div style={styles.h2}>AI Notes</div>
+      <input
+        style={styles.input}
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Search verse, question, or answer..."
+      />
+
+      {loading ? (
+        <div style={styles.small}>Loading AI notes...</div>
+      ) : (
+        <div style={styles.list}>
+          {notes.length === 0 ? (
+            <div style={styles.p}>No AI notes yet.</div>
+          ) : (
+            notes.map((note) => (
+              <div key={note.id} style={styles.aiNoteCard}>
+                <div style={styles.rowTop}>
+                  <div style={styles.rowTitle}>
+                    {note.verseRef || note.topic || "AI Note"}
+                  </div>
+                  <div style={styles.rowDate}>{formatDateTime(note.createdAt)}</div>
+                </div>
+                {note.question ? <div style={styles.p}><b>Q:</b> {note.question}</div> : null}
+                <div style={styles.pPreserve}><b>A:</b> {note.answer || "-"}</div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -711,7 +1016,7 @@ function NewEntry({
 
       <label style={styles.label}>Your notes</label>
       <textarea
-        style={{ ...styles.textarea, minHeight: 140 }}
+        style={{ ...styles.textarea, minHeight: 160 }}
         value={notes}
         onChange={(e) => setNotes(e.target.value)}
         placeholder="What stood out? What does it mean to you? How will you apply it?"
@@ -720,8 +1025,6 @@ function NewEntry({
       <button style={styles.primary} onClick={onSave}>
         Save Entry
       </button>
-
-      <div style={styles.smallHint}>Saved to your account and synced across devices.</div>
     </div>
   );
 }
@@ -737,10 +1040,9 @@ function Search({ query, setQuery, results, onOpen }) {
         placeholder="Search date (YYYY-MM-DD), verse reference, verse text, or notes..."
       />
       <div style={styles.small}>{results.length} result(s)</div>
-
       <div style={styles.list}>
-        {results.map((e) => (
-          <EntryRow key={e.id} entry={e} onOpen={() => onOpen(e.id)} />
+        {results.map((entry) => (
+          <EntryRow key={entry.id} entry={entry} onOpen={() => onOpen(entry.id)} />
         ))}
       </div>
     </div>
@@ -755,9 +1057,7 @@ function AllEntries({ entries, onOpen }) {
         {entries.length === 0 ? (
           <div style={styles.p}>No entries yet.</div>
         ) : (
-          entries.map((e) => (
-            <EntryRow key={e.id} entry={e} onOpen={() => onOpen(e.id)} />
-          ))
+          entries.map((entry) => <EntryRow key={entry.id} entry={entry} onOpen={() => onOpen(entry.id)} />)
         )}
       </div>
     </div>
@@ -807,7 +1107,7 @@ function EntryView({ entry, onDelete, onUpdate }) {
 
       <label style={styles.label}>Your notes</label>
       <textarea
-        style={{ ...styles.textarea, minHeight: 140 }}
+        style={{ ...styles.textarea, minHeight: 160 }}
         value={entry.notes}
         onChange={(e) => onUpdate({ notes: e.target.value })}
       />
@@ -828,19 +1128,21 @@ function BottomTabs({ active, onTab }) {
     { key: "new", label: "New" },
     { key: "search", label: "Search" },
     { key: "all", label: "Entries" },
+    { key: "ai", label: "Explore AI" },
   ];
+
   return (
     <div style={styles.tabs}>
-      {tabs.map((t) => (
+      {tabs.map((tab) => (
         <button
-          key={t.key}
-          onClick={() => onTab(t.key)}
+          key={tab.key}
+          onClick={() => onTab(tab.key)}
           style={{
             ...styles.tabBtn,
-            ...(active === t.key ? styles.tabActive : {}),
+            ...(active === tab.key ? styles.tabActive : {}),
           }}
         >
-          {t.label}
+          {tab.label}
         </button>
       ))}
     </div>
@@ -850,28 +1152,65 @@ function BottomTabs({ active, onTab }) {
 const styles = {
   page: {
     minHeight: "100dvh",
+    position: "relative",
     display: "block",
-    background: "#0b0f19",
-    padding: "max(0px, env(safe-area-inset-top)) max(0px, env(safe-area-inset-right)) max(0px, env(safe-area-inset-bottom)) max(0px, env(safe-area-inset-left))",
+    background:
+      "radial-gradient(circle at 20% 0%, rgba(196, 146, 70, 0.28), transparent 40%), radial-gradient(circle at 85% 100%, rgba(44, 98, 195, 0.22), transparent 42%), #071021",
+    padding:
+      "max(0px, env(safe-area-inset-top)) max(0px, env(safe-area-inset-right)) max(0px, env(safe-area-inset-bottom)) max(0px, env(safe-area-inset-left))",
     overflow: "hidden",
-    fontFamily:
-      'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial',
+    fontFamily: '"Nunito Sans", "Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
+  },
+  bgGlowA: {
+    position: "absolute",
+    width: 360,
+    height: 360,
+    borderRadius: "50%",
+    background: "radial-gradient(circle, rgba(255,208,120,0.16), rgba(255,208,120,0))",
+    top: -140,
+    left: -110,
+    filter: "blur(2px)",
+    pointerEvents: "none",
+  },
+  bgGlowB: {
+    position: "absolute",
+    width: 380,
+    height: 380,
+    borderRadius: "50%",
+    background: "radial-gradient(circle, rgba(61,131,255,0.18), rgba(61,131,255,0))",
+    right: -120,
+    bottom: -120,
+    filter: "blur(4px)",
+    pointerEvents: "none",
+  },
+  crossPattern: {
+    position: "absolute",
+    inset: 0,
+    backgroundImage:
+      "linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.035) 1px, transparent 1px)",
+    backgroundSize: "72px 72px",
+    maskImage: "radial-gradient(circle at center, black, transparent 74%)",
+    pointerEvents: "none",
   },
   app: {
-    width: "min(980px, 100vw)",
+    position: "relative",
+    zIndex: 1,
+    width: "min(1050px, 100vw)",
     minHeight: "100dvh",
     height: "100dvh",
     margin: "0 auto",
-    background: "#111827",
+    background: "rgba(12,22,40,0.88)",
+    backdropFilter: "blur(4px)",
     borderRadius: 0,
     border: "1px solid rgba(255,255,255,0.08)",
     overflow: "hidden",
-    boxShadow: "0 20px 60px rgba(0,0,0,0.4)",
+    boxShadow: "0 24px 80px rgba(0,0,0,0.45)",
     display: "flex",
     flexDirection: "column",
   },
   authShell: {
-    width: "min(480px, calc(100vw - 24px))",
+    width: "min(500px, calc(100vw - 24px))",
+    margin: "24px auto",
     display: "grid",
     gap: 18,
     padding: 12,
@@ -879,23 +1218,25 @@ const styles = {
   },
   authBrand: {
     color: "#fff",
-    fontSize: 28,
+    fontSize: 32,
     fontWeight: 900,
     textAlign: "center",
+    letterSpacing: 0.4,
   },
   authCard: {
-    background: "#111827",
+    background: "rgba(13,23,42,0.92)",
     border: "1px solid rgba(255,255,255,0.08)",
-    borderRadius: 18,
+    borderRadius: 20,
     padding: 24,
     color: "#e5e7eb",
     boxShadow: "0 20px 60px rgba(0,0,0,0.4)",
   },
   setupCard: {
-    width: "min(640px, calc(100vw - 24px))",
-    background: "#111827",
+    width: "min(680px, calc(100vw - 24px))",
+    margin: "24px auto",
+    background: "rgba(13,23,42,0.92)",
     border: "1px solid rgba(255,255,255,0.08)",
-    borderRadius: 18,
+    borderRadius: 20,
     padding: 24,
     color: "#e5e7eb",
     boxShadow: "0 20px 60px rgba(0,0,0,0.4)",
@@ -906,12 +1247,12 @@ const styles = {
     gap: 12,
     padding: "14px 16px",
     borderBottom: "1px solid rgba(255,255,255,0.08)",
-    background: "rgba(0,0,0,0.15)",
+    background: "rgba(7,16,33,0.64)",
   },
   headerStack: { flex: 1, minWidth: 0 },
-  headerTitle: { color: "#fff", fontWeight: 700, fontSize: 16 },
+  headerTitle: { color: "#fff", fontWeight: 800, fontSize: 17 },
   headerSubtitle: {
-    color: "rgba(255,255,255,0.65)",
+    color: "rgba(255,255,255,0.7)",
     fontSize: 12,
     marginTop: 2,
     overflow: "hidden",
@@ -920,19 +1261,20 @@ const styles = {
   },
   headerAction: {
     borderRadius: 10,
-    border: "1px solid rgba(255,255,255,0.10)",
-    background: "rgba(255,255,255,0.06)",
+    border: "1px solid rgba(255,255,255,0.12)",
+    background: "rgba(255,255,255,0.08)",
     color: "#fff",
     cursor: "pointer",
     fontSize: 13,
     padding: "9px 12px",
+    fontWeight: 700,
   },
   homeBtn: {
     width: 34,
     height: 34,
     borderRadius: 10,
-    border: "1px solid rgba(255,255,255,0.10)",
-    background: "rgba(255,255,255,0.06)",
+    border: "1px solid rgba(255,255,255,0.12)",
+    background: "rgba(255,255,255,0.08)",
     color: "#fff",
     cursor: "pointer",
     fontSize: 14,
@@ -950,12 +1292,66 @@ const styles = {
     overscrollBehavior: "contain",
     WebkitOverflowScrolling: "touch",
   },
+  stack: { display: "grid", gap: 12 },
+  hero: {
+    padding: 18,
+    borderRadius: 18,
+    border: "1px solid rgba(255,208,120,0.28)",
+    background:
+      "linear-gradient(120deg, rgba(255,208,120,0.18), rgba(255,208,120,0.03) 35%, rgba(49,95,176,0.22))",
+    color: "#f8fafc",
+  },
+  heroEyebrow: {
+    fontSize: 12,
+    fontWeight: 800,
+    letterSpacing: 1.1,
+    textTransform: "uppercase",
+    color: "rgba(255,236,192,0.92)",
+  },
+  heroTitle: {
+    marginTop: 8,
+    fontSize: "clamp(22px, 3.2vw, 30px)",
+    fontWeight: 900,
+    lineHeight: 1.2,
+  },
+  heroText: {
+    marginTop: 8,
+    fontSize: 14,
+    color: "rgba(241,245,249,0.9)",
+  },
+  homeWrap: { display: "grid", gap: 12 },
+  homeGrid: {
+    display: "grid",
+    gap: 10,
+    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+  },
+  homeMetaGrid: {
+    display: "grid",
+    gap: 12,
+    gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+  },
   card: {
     background: "rgba(255,255,255,0.05)",
     border: "1px solid rgba(255,255,255,0.10)",
     borderRadius: 16,
     padding: 16,
     color: "#e5e7eb",
+  },
+  aiNoteCard: {
+    background: "rgba(4,12,24,0.42)",
+    border: "1px solid rgba(255,255,255,0.10)",
+    borderRadius: 14,
+    padding: 12,
+    color: "#e5e7eb",
+  },
+  aiAnswerCard: {
+    marginTop: 14,
+    background: "rgba(255,255,255,0.05)",
+    border: "1px solid rgba(255,255,255,0.10)",
+    borderRadius: 14,
+    padding: 14,
+    display: "grid",
+    gap: 10,
   },
   banner: {
     display: "flex",
@@ -970,11 +1366,12 @@ const styles = {
     color: "#e5e7eb",
   },
   bannerTitle: { fontSize: 15, fontWeight: 800, color: "#fff" },
-  h1: { fontSize: 28, fontWeight: 900, marginBottom: 10, color: "#fff" },
-  h2: { fontSize: 18, fontWeight: 800, marginBottom: 10, color: "#fff" },
-  p: { marginTop: 6, opacity: 0.95 },
-  small: { fontSize: 12, opacity: 0.8, marginTop: 8 },
-  smallHint: { fontSize: 12, opacity: 0.75, marginTop: 10 },
+  h1: { fontSize: 30, fontWeight: 900, marginBottom: 10, color: "#fff" },
+  h2: { fontSize: 22, fontWeight: 900, marginBottom: 10, color: "#fff" },
+  p: { marginTop: 6, opacity: 0.95, lineHeight: 1.45 },
+  pPreserve: { whiteSpace: "pre-wrap", lineHeight: 1.55, opacity: 0.95 },
+  small: { fontSize: 12, opacity: 0.82, marginTop: 8 },
+  smallHint: { fontSize: 12, opacity: 0.76, marginTop: 10 },
   notice: {
     fontSize: 13,
     padding: "10px 12px",
@@ -983,24 +1380,33 @@ const styles = {
     background: "rgba(255,255,255,0.06)",
     color: "#fff",
   },
-  label: { display: "block", fontSize: 12, opacity: 0.9, marginTop: 12 },
+  noticeDanger: {
+    marginTop: 12,
+    fontSize: 13,
+    padding: "10px 12px",
+    borderRadius: 12,
+    border: "1px solid rgba(255,120,120,0.28)",
+    background: "rgba(180,54,54,0.16)",
+    color: "#ffe3e3",
+  },
+  label: { display: "block", fontSize: 12, opacity: 0.9, marginTop: 12, fontWeight: 700 },
   input: {
     width: "100%",
     marginTop: 6,
-    padding: "10px 12px",
+    padding: "11px 12px",
     borderRadius: 12,
     border: "1px solid rgba(255,255,255,0.12)",
-    background: "rgba(0,0,0,0.25)",
+    background: "rgba(0,0,0,0.28)",
     color: "#fff",
     outline: "none",
   },
   textarea: {
     width: "100%",
     marginTop: 6,
-    padding: "10px 12px",
+    padding: "11px 12px",
     borderRadius: 12,
     border: "1px solid rgba(255,255,255,0.12)",
-    background: "rgba(0,0,0,0.25)",
+    background: "rgba(0,0,0,0.28)",
     color: "#fff",
     outline: "none",
     minHeight: 90,
@@ -1011,8 +1417,8 @@ const styles = {
     width: "100%",
     padding: "12px 14px",
     borderRadius: 14,
-    border: "1px solid rgba(255,255,255,0.14)",
-    background: "rgba(255,255,255,0.12)",
+    border: "1px solid rgba(255,255,255,0.18)",
+    background: "linear-gradient(180deg, rgba(255,255,255,0.18), rgba(255,255,255,0.1))",
     color: "#fff",
     cursor: "pointer",
     fontWeight: 800,
@@ -1021,8 +1427,8 @@ const styles = {
   secondary: {
     padding: "10px 12px",
     borderRadius: 12,
-    border: "1px solid rgba(255,255,255,0.14)",
-    background: "rgba(255,255,255,0.08)",
+    border: "1px solid rgba(255,255,255,0.16)",
+    background: "rgba(255,255,255,0.1)",
     color: "#fff",
     cursor: "pointer",
     fontWeight: 700,
@@ -1031,9 +1437,19 @@ const styles = {
     marginTop: 12,
     border: "none",
     background: "transparent",
-    color: "#cbd5e1",
+    color: "#d4e4ff",
     cursor: "pointer",
     padding: 0,
+    textAlign: "left",
+  },
+  linkBtnInline: {
+    border: "none",
+    background: "transparent",
+    color: "#d4e4ff",
+    cursor: "pointer",
+    padding: 0,
+    textAlign: "left",
+    fontWeight: 700,
   },
   danger: {
     padding: "10px 12px",
@@ -1062,6 +1478,13 @@ const styles = {
     gap: 12,
     marginTop: 12,
   },
+  rowInline: {
+    marginTop: 12,
+    display: "flex",
+    gap: 16,
+    alignItems: "center",
+    flexWrap: "wrap",
+  },
   list: { marginTop: 12, display: "grid", gap: 10 },
   rowBtn: {
     textAlign: "left",
@@ -1075,85 +1498,46 @@ const styles = {
   },
   rowTop: { display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" },
   rowTitle: { fontWeight: 800 },
-  rowDate: { fontSize: 12, opacity: 0.7 },
+  rowDate: { fontSize: 12, opacity: 0.72 },
   rowPreview: {
     marginTop: 6,
-    opacity: 0.85,
+    opacity: 0.9,
     display: "-webkit-box",
     WebkitLineClamp: 2,
     WebkitBoxOrient: "vertical",
     overflow: "hidden",
   },
-  homeWrap: { display: "grid", gap: 12 },
-  crossBox: {
-    position: "relative",
-    minHeight: 460,
-    height: "min(520px, calc(100dvh - 220px))",
-    borderRadius: 18,
-    border: "1px solid rgba(255,255,255,0.10)",
-    background: "rgba(0,0,0,0.18)",
-    overflow: "hidden",
-  },
-  vLine: {
-    position: "absolute",
-    top: 0,
-    bottom: 0,
-    left: "50%",
-    width: 2,
-    background: "rgba(255,255,255,0.10)",
-    transform: "translateX(-1px)",
-  },
-  hLine: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    top: "50%",
-    height: 2,
-    background: "rgba(255,255,255,0.10)",
-    transform: "translateY(-1px)",
-  },
-  crossCenter: {
-    position: "absolute",
-    left: "50%",
-    top: "50%",
-    transform: "translate(-50%, -50%)",
-    fontSize: 26,
-    opacity: 0.9,
-    color: "#fff",
-    background: "rgba(0,0,0,0.35)",
-    border: "1px solid rgba(255,255,255,0.12)",
-    borderRadius: 999,
-    width: 54,
-    height: 54,
+  topicGrid: {
+    marginTop: 12,
     display: "grid",
-    placeItems: "center",
+    gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+    gap: 10,
   },
-  quad: {
-    position: "absolute",
-    padding: 14,
-    display: "grid",
-    placeItems: "stretch",
+  topicChip: {
+    padding: "10px 12px",
+    borderRadius: 12,
+    border: "1px solid rgba(255,208,120,0.28)",
+    background: "rgba(255,208,120,0.08)",
+    color: "#f8f3dc",
+    fontWeight: 700,
+    fontSize: 13,
   },
-  q1: { left: 0, top: 0, right: "50%", bottom: "50%" },
-  q2: { left: "50%", top: 0, right: 0, bottom: "50%" },
-  q3: { left: 0, top: "50%", right: "50%", bottom: 0 },
-  q4: { left: "50%", top: "50%", right: 0, bottom: 0 },
   bigBtn: {
     width: "100%",
-    height: "100%",
     borderRadius: 16,
-    border: "1px solid rgba(255,255,255,0.10)",
-    background: "rgba(255,255,255,0.07)",
+    border: "1px solid rgba(255,255,255,0.12)",
+    background: "linear-gradient(180deg, rgba(255,255,255,0.12), rgba(255,255,255,0.06))",
     color: "#fff",
     cursor: "pointer",
-    padding: 18,
+    padding: 16,
     textAlign: "left",
+    minHeight: 112,
   },
   bigBtnLabel: { fontSize: 20, fontWeight: 900, marginBottom: 6 },
-  bigBtnSub: { opacity: 0.85, fontSize: 13 },
+  bigBtnSub: { opacity: 0.88, fontSize: 13 },
   pClamp: {
     marginTop: 8,
-    opacity: 0.85,
+    opacity: 0.9,
     display: "-webkit-box",
     WebkitLineClamp: 4,
     WebkitBoxOrient: "vertical",
@@ -1161,20 +1545,21 @@ const styles = {
   },
   tabs: {
     display: "grid",
-    gridTemplateColumns: "repeat(4, 1fr)",
+    gridTemplateColumns: "repeat(5, 1fr)",
     borderTop: "1px solid rgba(255,255,255,0.08)",
-    background: "rgba(0,0,0,0.18)",
+    background: "rgba(6,14,30,0.88)",
     position: "sticky",
     bottom: 0,
   },
   tabBtn: {
-    padding: "14px 10px calc(14px + env(safe-area-inset-bottom))",
+    padding: "14px 8px calc(14px + env(safe-area-inset-bottom))",
     border: "none",
     background: "transparent",
-    color: "rgba(255,255,255,0.75)",
+    color: "rgba(255,255,255,0.76)",
     cursor: "pointer",
     fontWeight: 800,
-    minHeight: 56,
+    minHeight: 58,
+    fontSize: 13,
   },
-  tabActive: { color: "#fff", background: "rgba(255,255,255,0.06)" },
+  tabActive: { color: "#fff", background: "rgba(255,255,255,0.08)" },
 };
