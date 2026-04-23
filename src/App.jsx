@@ -150,7 +150,7 @@ export default function App() {
         <Header
           title={
             screen === "home"
-              ? "Bible Journal"
+              ? "BY THE BLOOD"
               : screen === "new"
               ? "New Entry"
               : screen === "search"
