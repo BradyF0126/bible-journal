@@ -703,7 +703,7 @@ function SetupScreen() {
           VITE_SUPABASE_ANON_KEY=your-anon-public-key
         </div>
         <div style={styles.small}>
-          For AI, also set <code>OPENAI_API_KEY</code> in Vercel project environment variables.
+          Guided Explore AI now runs with no paid API key required.
         </div>
       </div>
     </div>
