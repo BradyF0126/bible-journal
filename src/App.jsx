@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "./supabase";
 
 const STORAGE_KEY = "bible_journal_entries_v1";
@@ -86,6 +86,7 @@ export default function App() {
   const [verseText, setVerseText] = useState("");
   const [notes, setNotes] = useState("");
   const [query, setQuery] = useState("");
+  const contentRef = useRef(null);
 
   const localEntries = useMemo(() => loadLocalEntries(), []);
   const hasLocalEntries = localEntries.length > 0;
@@ -159,6 +160,11 @@ export default function App() {
       cancelled = true;
     };
   }, [user]);
+
+  useEffect(() => {
+    // Keep each tab anchored to the top so the layout does not appear to jump.
+    contentRef.current?.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, [screen]);
 
   const sortedEntries = useMemo(() => {
     return [...entries].sort((a, b) => {
@@ -414,7 +420,7 @@ export default function App() {
           onSignOut={handleSignOut}
         />
 
-        <div style={styles.content}>
+        <div style={styles.content} ref={contentRef}>
           {syncMessage ? <div style={styles.notice}>{syncMessage}</div> : null}
 
           {hasLocalEntries ? (
@@ -843,26 +849,33 @@ function BottomTabs({ active, onTab }) {
 
 const styles = {
   page: {
-    minHeight: "100vh",
-    display: "grid",
-    placeItems: "center",
+    minHeight: "100dvh",
+    display: "block",
     background: "#0b0f19",
-    padding: 16,
+    padding: "max(0px, env(safe-area-inset-top)) max(0px, env(safe-area-inset-right)) max(0px, env(safe-area-inset-bottom)) max(0px, env(safe-area-inset-left))",
+    overflow: "hidden",
     fontFamily:
       'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial',
   },
   app: {
-    width: "min(980px, 96vw)",
+    width: "min(980px, 100vw)",
+    minHeight: "100dvh",
+    height: "100dvh",
+    margin: "0 auto",
     background: "#111827",
-    borderRadius: 18,
+    borderRadius: 0,
     border: "1px solid rgba(255,255,255,0.08)",
     overflow: "hidden",
     boxShadow: "0 20px 60px rgba(0,0,0,0.4)",
+    display: "flex",
+    flexDirection: "column",
   },
   authShell: {
-    width: "min(480px, 96vw)",
+    width: "min(480px, calc(100vw - 24px))",
     display: "grid",
     gap: 18,
+    padding: 12,
+    boxSizing: "border-box",
   },
   authBrand: {
     color: "#fff",
@@ -879,7 +892,7 @@ const styles = {
     boxShadow: "0 20px 60px rgba(0,0,0,0.4)",
   },
   setupCard: {
-    width: "min(640px, 96vw)",
+    width: "min(640px, calc(100vw - 24px))",
     background: "#111827",
     border: "1px solid rgba(255,255,255,0.08)",
     borderRadius: 18,
@@ -925,7 +938,18 @@ const styles = {
     fontSize: 14,
     fontWeight: 800,
   },
-  content: { padding: 16, display: "grid", gap: 12 },
+  content: {
+    padding: 16,
+    display: "grid",
+    gap: 12,
+    flex: 1,
+    overflowY: "scroll",
+    overflowX: "hidden",
+    alignContent: "start",
+    scrollbarGutter: "stable",
+    overscrollBehavior: "contain",
+    WebkitOverflowScrolling: "touch",
+  },
   card: {
     background: "rgba(255,255,255,0.05)",
     border: "1px solid rgba(255,255,255,0.10)",
@@ -938,6 +962,7 @@ const styles = {
     gap: 16,
     alignItems: "center",
     justifyContent: "space-between",
+    flexWrap: "wrap",
     padding: 16,
     borderRadius: 16,
     background: "rgba(255,255,255,0.05)",
@@ -1048,9 +1073,9 @@ const styles = {
     color: "#fff",
     cursor: "pointer",
   },
-  rowTop: { display: "flex", justifyContent: "space-between", gap: 12 },
+  rowTop: { display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" },
   rowTitle: { fontWeight: 800 },
-  rowDate: { fontSize: 12, opacity: 0.7, whiteSpace: "nowrap" },
+  rowDate: { fontSize: 12, opacity: 0.7 },
   rowPreview: {
     marginTop: 6,
     opacity: 0.85,
@@ -1062,7 +1087,8 @@ const styles = {
   homeWrap: { display: "grid", gap: 12 },
   crossBox: {
     position: "relative",
-    height: 520,
+    minHeight: 460,
+    height: "min(520px, calc(100dvh - 220px))",
     borderRadius: 18,
     border: "1px solid rgba(255,255,255,0.10)",
     background: "rgba(0,0,0,0.18)",
@@ -1138,14 +1164,17 @@ const styles = {
     gridTemplateColumns: "repeat(4, 1fr)",
     borderTop: "1px solid rgba(255,255,255,0.08)",
     background: "rgba(0,0,0,0.18)",
+    position: "sticky",
+    bottom: 0,
   },
   tabBtn: {
-    padding: "12px 10px",
+    padding: "14px 10px calc(14px + env(safe-area-inset-bottom))",
     border: "none",
     background: "transparent",
     color: "rgba(255,255,255,0.75)",
     cursor: "pointer",
     fontWeight: 800,
+    minHeight: 56,
   },
   tabActive: { color: "#fff", background: "rgba(255,255,255,0.06)" },
 };
