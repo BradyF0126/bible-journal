@@ -370,6 +370,7 @@ export default function App() {
 
   return (
     <div style={styles.page}>
+      <div style={styles.crossScatter} />
       <div style={styles.app}>
         <Header
           title={
@@ -783,7 +784,7 @@ const styles = {
     minHeight: "100dvh",
     position: "relative",
     display: "block",
-    background: "#071021",
+    background: "#efe3cf",
     padding:
       "max(0px, env(safe-area-inset-top)) max(0px, env(safe-area-inset-right)) max(0px, env(safe-area-inset-bottom)) max(0px, env(safe-area-inset-left))",
     overflow: "hidden",
@@ -796,13 +797,23 @@ const styles = {
     minHeight: "100dvh",
     height: "100dvh",
     margin: "0 auto",
-    background: "rgba(12,22,40,0.92)",
+    background: "rgba(239,227,207,0.96)",
     borderRadius: 0,
     border: "1px solid rgba(255,255,255,0.08)",
     overflow: "hidden",
     boxShadow: "0 24px 80px rgba(0,0,0,0.45)",
     display: "flex",
     flexDirection: "column",
+  },
+  crossScatter: {
+    position: "absolute",
+    inset: 0,
+    zIndex: 0,
+    pointerEvents: "none",
+    opacity: 0.38,
+    backgroundImage:
+      "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='260' height='260' viewBox='0 0 260 260'%3E%3Cg stroke='%23cbb898' stroke-width='3' stroke-linecap='round' opacity='0.9'%3E%3Cpath d='M40 25v16M32 33h16'/%3E%3Cpath d='M135 58v20M125 68h20'/%3E%3Cpath d='M220 32v14M213 39h14'/%3E%3Cpath d='M82 132v18M73 141h18'/%3E%3Cpath d='M182 122v22M171 133h22'/%3E%3Cpath d='M34 214v15M26.5 221.5h15'/%3E%3Cpath d='M132 205v19M122.5 214.5h19'/%3E%3Cpath d='M226 214v16M218 222h16'/%3E%3C/g%3E%3C/svg%3E\")",
+    backgroundRepeat: "repeat",
   },
   authShell: {
     width: "min(500px, calc(100vw - 24px))",
